@@ -64,3 +64,14 @@ stores nothing.
 
 - 2026-11-21: repository created; spike workflow and server written.
   Waiting for the `TS_AUTHKEY` secret to be registered, then the spike run.
+
+### 2026-11-21 — Spike result: REACHABLE
+
+- Run 44878187967 failed at `tailscale up`: the v4 action sets `--hostname`
+  itself, so passing it again via `args` made the flag "provided multiple
+  times". Fixed by using the action's dedicated `hostname` input.
+- Run 44878377495: joined the tailnet as `android-ci-spike`, server up,
+  and Moka's VM received **HTTP 200** from `/health` through the tunnel
+  proxy. The Tailscale route is proven; the polling fallback is not needed.
+- Node discovery used the VM's own `tailscale status` peer list, so the
+  session design does not depend on the Mac being reachable.
