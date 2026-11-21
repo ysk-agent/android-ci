@@ -1,0 +1,79 @@
+name: ci-session-spike
+
+# Reachability spike for the session CI server design.
+# Joins the tailnet as an ephemeral node, starts spike/server.py,
+# publishes the health URL in the step summary, then idles until the
+# requested lifetime expires. Proves (or disproves) that Moka's VM can
+# reach a GitHub-hosted runner over the tailnet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lifetime_minutes:
+        description: "How long to keep the node alive (1-15)"
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check TS_AUTHKEY is configured
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if [ -z "$TS_AUTHKEY" ]; then
+            echo "::error::TS_AUTHKEY repository secret is not set. Register a Tailscale auth key (reusable + ephemeral) under this name first."
+            exit 1
+          fi
+          echo "TS_AUTHKEY is present."
+
+      - name: Join tailnet
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          args: --hostname=android-ci-spike
+
+      - name: Start spike server
+        run: |
+          nohup python3 spike/server.py > server.log 2>&1 &
+          for i in $(seq 1 10); do
+            if curl -fsS http://127.0.0.1:8765/health; then
+              echo "server is up locally"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Publish health URL
+        run: |
+          IP=$(tailscale ip -4)
+          DNS=$(tailscale status --json | python3 -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))")
+          {
+            echo "## CI session spike"
+            echo ""
+            echo "- Tailnet IP: \`$IP\`"
+            echo "- MagicDNS: \`$DNS\`"
+            echo "- Health: \`http://$IP:8765/health\`"
+            echo "- Lifetime: ${{ inputs.lifetime_minutes }} minutes from job start"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "HEALTH_URL=http://$IP:8765/health"
+
+      - name: Stay alive
+        run: |
+          LIFE="${{ inputs.lifetime_minutes }}"
+          case "$LIFE" in (*[!0-9]*|'') LIFE=10;; esac
+          if [ "$LIFE" -lt 1 ]; then LIFE=1; fi
+          if [ "$LIFE" -gt 15 ]; then LIFE=15; fi
+          echo "Staying alive for $LIFE minutes. Health URL is in the step summary."
+          for m in $(seq 1 "$LIFE"); do
+            sleep 60
+            echo "alive: minute $m/$LIFE - $(curl -fsS http://127.0.0.1:8765/health || echo LOCAL_HEALTH_FAILED)"
+          done
+          echo "Lifetime over; job ends and the ephemeral node leaves the tailnet."
